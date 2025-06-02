@@ -16,10 +16,26 @@ totalVertices = 0  # Número total de vértices no grafo
 matrizAdj = []     # Matriz de adjacência com pesos das arestas
 vertices = []      # Lista de vértices com coordenadas (ex: {'x': 0.0, 'y': 0.0})
 
+#Função para calcular a distância entre dois pontos no plano:
+def calcDist(x0, y0, x1, y1):
+    return math.sqrt((x0 - x1)**2 + (y0 - y1)**2)
+
+#Cria a matriz de adjacência e calcula o peso (distância) para cada aresta com base nas coordenadas dos vértices:
+def construirGrafo(vertices, arestas): 
+    global matrizAdj
+    matrizAdj = [[INF for _ in range(totalVertices)] for _ in range(totalVertices)]
+    
+    for a, b, _ in arestas:
+        dist = calcDist(vertices[a].x, vertices[a].y, vertices[b].x, vertices[b].y)
+        matrizAdj[a][b] = dist
+        matrizAdj[b][a] = dist 
+
 def dijkstra(inicio, fim):
-    dist = [] #[MAX_VERTICES]
-    prev = [] #[MAX_VERTICES]
-    visited = [] #[MAX_VERTICES]
+    dist = [INF] * totalVertices #vetor de distancias
+    prev = [-1] * totalVertices #vetor para reconstrução do caminho
+    visited = [0] * totalVertices #vetor de visitados
+
+
 
     for i in range (totalVertices): #poderia fazer com .append() também
         dist[i] = INF
@@ -47,13 +63,13 @@ def dijkstra(inicio, fim):
                 prev[v] = u
     
     if dist[fim] == INF:
-        print("Sem caminho entre {} e {}.", inicio, fim)
+        print(f"Sem caminho entre {inicio} e {fim}.")
         return
     
     print("\nDistancia total: u.m.", dist[fim])
 
     #Reconstrução do caminho
-    path = [MAX_VERTICES]
+    path = []
     #path_len = 0
     v = fim
 
@@ -65,3 +81,69 @@ def dijkstra(inicio, fim):
     for i in reversed(path):
         print("{} (x={}, y={})".format(i, vertices[i].x, vertices[i].y))
         #print(f"{i} (x={vertices[i]['x']}, y={vertices[i]['y']})")
+
+def main():
+    global totalVertices, totalArestas, vertices, arestas
+    
+    # Definição dos vértices
+    vertices = [
+        Vertices(0, 149, 200),
+        Vertices(1, 225, 200),
+        Vertices(2, 156.175936136879, 193.978674634193),
+        Vertices(3, 164.288445856511, 189.29491496376),
+        Vertices(4, 173.091034656191, 186.09103465619),
+        Vertices(5, 182.316240329567, 184.46438199339),
+        Vertices(6, 191.683759670433, 184.46438199339),
+        Vertices(7, 200.908965343809, 186.091034656191),
+        Vertices(8, 209.711554143489, 189.29491496376),
+        Vertices(9, 217.824063863121, 193.978674634193),
+        Vertices(10, 217.824063863121, 206.021325365807),
+        Vertices(11, 209.711554143489, 210.70508503624),
+        Vertices(12, 200.908965343809, 213.908965343809),
+        Vertices(13, 191.683759670433, 215.53561800661),
+        Vertices(14, 182.316240329567, 215.53561800661),
+        Vertices(15, 173.091034656191, 213.908965343809),
+        Vertices(16, 164.288445856511, 210.70508503624),
+        Vertices(17, 156.175936136879, 206.021325365807),
+    ]
+    totalVertices = len(vertices)
+    
+    # Definição das arestas (tuplas: u, v, peso placeholder)
+    arestas = [
+        (0, 2, 0),
+        (2, 3, 0),
+        (3, 4, 0),
+        (4, 5, 0),
+        (5, 6, 0),
+        (6, 7, 0),
+        (7, 8, 0),
+        (8, 9, 0),
+        (9, 0, 0),
+        (9, 10, 0),
+        (10, 11, 0),
+        (11, 12, 0),
+        (12, 13, 0),
+        (13, 14, 0),
+        (14, 15, 0),
+        (15, 16, 0),
+        (16, 17, 0),
+        (17, 0, 0),
+    ]
+    totalArestas = len(arestas)
+    
+    construirGrafo(vertices, arestas)
+
+    print("Menor caminho entre dois vértices - algoritmo de Dijkstra\n")
+    print(f"Total de vértices: {totalVertices}")
+    print(f"Total de arestas : {totalArestas}")
+
+    origem = int(input(f"Digite o vértice de origem (0 a {totalVertices - 1}): "))
+    destino = int(input(f"Digite o vértice de destino (0 a {totalVertices - 1}): "))
+
+    if 0 <= origem < totalVertices and 0 <= destino < totalVertices:
+        dijkstra(origem, destino)
+    else:
+        print("Índices inválidos.")
+
+if __name__ == "__main__":
+    main()
