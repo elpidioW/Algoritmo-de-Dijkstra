@@ -4,14 +4,166 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import networkx as nx
+import numpy as np
 import math
 from dataclasses import dataclass
 import os
 import time
 from PIL import Image, ImageTk
 import io
+import xml.etree.ElementTree as ET
 
 INF = 1e9
+
+# Parâmetros da zona UTM 23S (baseado no código C)
+A = 6378137.0            # Semi-eixo maior WGS84
+F = 1.0 / 298.257223563  # Achatamento
+K0 = 0.9996
+LON0_DEG = -45.0         # longitude central da zona 23S
+PI = 3.14159265358979323846
+
+def converter_para_utm(lat_deg, lon_deg):
+    """Converte coordenadas geográficas para UTM (baseado no código C)"""
+    e2 = F * (2 - F)                    # excentricidade ao quadrado
+    ep2 = e2 / (1 - e2)                 # excentricidade secundária ao quadrado
+    lat = lat_deg * PI / 180.0
+    lon = lon_deg * PI / 180.0
+    lon0 = LON0_DEG * PI / 180.0
+
+    N = A / math.sqrt(1 - e2 * math.sin(lat) * math.sin(lat))
+    T = math.tan(lat) * math.tan(lat)
+    C = ep2 * math.cos(lat) * math.cos(lat)
+    A_val = (lon - lon0) * math.cos(lat)
+
+    # Cálculo do arco meridional com mais termos
+    M = A * ((1 - e2/4 - 3*e2*e2/64 - 5*e2*e2*e2/256) * lat
+      - (3*e2/8 + 3*e2*e2/32 + 45*e2*e2*e2/1024) * math.sin(2*lat)
+      + (15*e2*e2/256 + 45*e2*e2*e2/1024) * math.sin(4*lat)
+      - (35*e2*e2*e2/3072) * math.sin(6*lat))
+
+    # Coordenada leste (X)
+    x = K0 * N * (A_val + (1 - T + C) * math.pow(A_val,3)/6
+         + (5 - 18*T + T*T + 72*C - 58*ep2) * math.pow(A_val,5)/120) + 500000.0
+
+    # Coordenada norte (Y)
+    y = K0 * (M + N * math.tan(lat) * (A_val*A_val/2 + (5 - T + 9*C + 4*C*C) * math.pow(A_val,4)/24
+         + (61 - 58*T + T*T + 600*C - 330*ep2) * math.pow(A_val,6)/720))
+
+    # Ajusta para hemisfério sul
+    if lat_deg < 0:
+        y += 10000000.0
+    
+    return x, y
+
+def reduzir_escala(pontos, redutor=2):
+    """Reduz a escala dos pontos (baseado no código C)"""
+    if not pontos:
+        return
+    
+    min_x = min(ponto['x'] for ponto in pontos)
+    min_y = min(ponto['y'] for ponto in pontos)
+    
+    for ponto in pontos:
+        ponto['x'] = (ponto['x'] - min_x) / redutor
+        ponto['y'] = (ponto['y'] - min_y) / redutor
+    
+    # Rotação vertical para que (0,0) seja no canto superior esquerdo
+    max_y = max(ponto['y'] for ponto in pontos)
+    for ponto in pontos:
+        ponto['y'] = max_y - ponto['y']
+
+def processar_arquivo_osm(caminho_arquivo):
+    """Processa arquivo OSM e retorna dados no formato .poly"""
+    try:
+        tree = ET.parse(caminho_arquivo)
+        root = tree.getroot()
+        
+        # Dicionários para armazenar nós e vias
+        nodes = {}  # id_original -> {lat, lon, x, y, id_interno}
+        ways = []   # lista de vias com nós
+        
+        # Processar nós
+        id_interno = 0
+        for node in root.findall('.//node'):
+            node_id_attr = node.get('id')
+            lat_attr = node.get('lat')
+            lon_attr = node.get('lon')
+            
+            if node_id_attr is None or lat_attr is None or lon_attr is None:
+                continue
+                
+            node_id = int(node_id_attr)
+            lat = float(lat_attr)
+            lon = float(lon_attr)
+            
+            # Converter para UTM
+            x, y = converter_para_utm(lat, lon)
+            
+            nodes[node_id] = {
+                'lat': lat,
+                'lon': lon,
+                'x': x,
+                'y': y,
+                'id_interno': id_interno
+            }
+            id_interno += 1
+        
+        # Processar vias
+        for way in root.findall('.//way'):
+            way_nodes = []
+            for nd in way.findall('nd'):
+                ref_attr = nd.get('ref')
+                if ref_attr is None:
+                    continue
+                    
+                ref_id = int(ref_attr)
+                if ref_id in nodes:
+                    way_nodes.append(nodes[ref_id]['id_interno'])
+            
+            if len(way_nodes) > 1:
+                ways.append(way_nodes)
+        
+        # Reduzir escala
+        reduzir_escala(nodes.values())
+        
+        # Converter para formato .poly
+        vertices = []
+        arestas = []
+        
+        # Criar lista de vértices ordenados por id_interno
+        vertices_ordenados = sorted(nodes.values(), key=lambda x: x['id_interno'])
+        
+        for node in vertices_ordenados:
+            vertices.append({
+                'id': node['id_interno'],
+                'x': node['x'],
+                'y': node['y']
+            })
+        
+        # Criar arestas a partir das vias
+        aresta_id = 0
+        for way in ways:
+            for i in range(len(way) - 1):
+                from_node = way[i]
+                to_node = way[i + 1]
+                
+                # Calcular distância
+                v1 = vertices[from_node]
+                v2 = vertices[to_node]
+                distancia = math.sqrt((v2['x'] - v1['x'])**2 + (v2['y'] - v1['y'])**2)
+                
+                arestas.append({
+                    'id': aresta_id,
+                    'orig': from_node,
+                    'dest': to_node,
+                    'dist': distancia
+                })
+                aresta_id += 1
+        
+        return vertices, arestas
+        
+    except Exception as e:
+        raise Exception(f"Erro ao processar arquivo OSM: {str(e)}")
 
 @dataclass
 class Vertices:
@@ -29,7 +181,7 @@ class InterfaceDijkstra:
     def __init__(self, root):
         self.root = root
         self.root.title("Algoritmo de Dijkstra - Interface Gráfica")
-        self.root.geometry("1400x1000")  # Janela ainda maior para acomodar todas as seções
+        self.root.geometry("1600x1200")  # Janela ainda maior para acomodar todos os controles
         
         # Variáveis globais
         self.vertices = []
@@ -49,6 +201,9 @@ class InterfaceDijkstra:
         self.modo_edicao = "navegacao"  # navegacao, adicionar_vertice, adicionar_aresta, remover_vertice, remover_aresta
         self.vertice_temporario = None  # Para adicionar arestas
         self.proximo_id_vertice = 0  # Para gerar IDs únicos para novos vértices
+        
+        # Variável para tamanho dos vértices
+        self.tamanho_vertices = 10 # Tamanho padrão dos vértices
         
         # Configurar interface
         self.criar_interface()
@@ -234,6 +389,43 @@ class InterfaceDijkstra:
                                        font=("Arial", 9, "bold"), foreground="blue")
         self.lbl_modo_atual.pack(anchor=tk.W, pady=(5, 0))
         
+        # Frame para controle de tamanho dos vértices
+        tamanho_frame = ttk.LabelFrame(left_scrollable_frame, text="Tamanho dos Vértices", padding=10)
+        tamanho_frame.pack(pady=10, fill=tk.X, padx=5)
+        
+        # Label para mostrar tamanho atual
+        self.lbl_tamanho = ttk.Label(tamanho_frame, text=f"Tamanho: {self.tamanho_vertices}", 
+                                    font=("Arial", 9, "bold"))
+        self.lbl_tamanho.pack(anchor=tk.W, pady=(0, 5))
+        
+        # Frame para botões de controle
+        botoes_tamanho_frame = ttk.Frame(tamanho_frame)
+        botoes_tamanho_frame.pack(fill=tk.X)
+        
+        # Botão para diminuir tamanho
+        ttk.Button(botoes_tamanho_frame, text="Diminuir", 
+                  command=self.diminuir_tamanho_vertices).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Botão para aumentar tamanho
+        ttk.Button(botoes_tamanho_frame, text="Aumentar", 
+                  command=self.aumentar_tamanho_vertices).pack(side=tk.LEFT)
+        
+        # Frame para opções de visualização
+        visualizacao_frame = ttk.LabelFrame(left_scrollable_frame, text="Opções de Visualização", padding=10)
+        visualizacao_frame.pack(pady=10, fill=tk.X, padx=5)
+        
+        # Checkbox para mostrar numeração dos vértices
+        self.mostrar_numeracao_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(visualizacao_frame, text="Mostrar numeração dos vértices", 
+                       variable=self.mostrar_numeracao_var,
+                       command=self.exibir_grafo).pack(anchor=tk.W, pady=2)
+        
+        # Checkbox para mostrar rótulos das arestas
+        self.mostrar_rotulos_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(visualizacao_frame, text="Mostrar pesos das arestas", 
+                       variable=self.mostrar_rotulos_var,
+                       command=self.exibir_grafo).pack(anchor=tk.W, pady=2)
+        
         # Painel direito (grafo)
         right_panel = ttk.Frame(main_frame, relief=tk.RAISED, borderwidth=2)
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
@@ -263,19 +455,57 @@ class InterfaceDijkstra:
         self.canvas.draw()
         
     def carregar_arquivo(self):
-        """Carrega o arquivo .poly selecionado pelo usuário"""
+        """Carrega o arquivo .poly ou .osm selecionado pelo usuário"""
         arquivo = filedialog.askopenfilename(
-            title="Selecione um arquivo .poly",
-            filetypes=[("Arquivos .poly", "*.poly"), ("Todos os arquivos", "*.*")]
+            title="Selecione um arquivo .poly ou .osm",
+            filetypes=[("Arquivos .poly", "*.poly"), ("Arquivos .osm", "*.osm"), ("Todos os arquivos", "*.*")]
         )
         
         if arquivo:
             try:
-                self.ler_arquivo(arquivo)
-                self.arquivo_carregado = True
-                self.atualizar_interface()
-                self.exibir_grafo()
-                messagebox.showinfo("Sucesso", f"Arquivo carregado com sucesso!\nVértices: {self.totalVertices}\nArestas: {self.totalArestas}")
+                # Verificar se é arquivo .osm
+                if arquivo.lower().endswith('.osm'):
+                    print(f"Processando arquivo OSM: {arquivo}")
+                    vertices_osm, arestas_osm = processar_arquivo_osm(arquivo)
+                    
+                    # Converter para o formato interno
+                    self.vertices = []
+                    self.arestas = []
+                    
+                    # Converter vértices
+                    for v in vertices_osm:
+                        vertice = Vertices(id=v['id'], x=v['x'], y=v['y'])
+                        self.vertices.append(vertice)
+                    
+                    # Converter arestas
+                    for a in arestas_osm:
+                        aresta = Arestas(orig=a['orig'], dest=a['dest'], dist=a['dist'])
+                        self.arestas.append(aresta)
+                    
+                    self.totalVertices = len(self.vertices)
+                    self.totalArestas = len(self.arestas)
+                    
+                    # Construir grafo
+                    self.construir_grafo()
+                    
+                    self.arquivo_carregado = True
+                    self.atualizar_interface()
+                    self.exibir_grafo()
+                    
+                    messagebox.showinfo("Sucesso", 
+                        f"Arquivo OSM processado com sucesso!\n"
+                        f"Vértices: {self.totalVertices}\n"
+                        f"Arestas: {self.totalArestas}\n"
+                        f"Coordenadas convertidas para UTM zona 23S")
+                    
+                else:
+                    # Processar arquivo .poly normalmente
+                    self.ler_arquivo(arquivo)
+                    self.arquivo_carregado = True
+                    self.atualizar_interface()
+                    self.exibir_grafo()
+                    messagebox.showinfo("Sucesso", f"Arquivo carregado com sucesso!\nVértices: {self.totalVertices}\nArestas: {self.totalArestas}")
+                    
             except Exception as e:
                 messagebox.showerror("Erro", f"Erro ao carregar arquivo: {str(e)}")
     
@@ -337,9 +567,10 @@ class InterfaceDijkstra:
             return INF
     
     def atualizar_interface(self):
-        """Atualiza a interface após carregar o arquivo"""
+        """Atualiza as informações na interface"""
         self.lbl_vertices.config(text=f"Vértices: {self.totalVertices}")
         self.lbl_arestas.config(text=f"Arestas: {self.totalArestas}")
+        self.lbl_tamanho.config(text=f"Tamanho: {self.tamanho_vertices}")
         
         # Atualizar comboboxes
         opcoes = []
@@ -441,14 +672,28 @@ class InterfaceDijkstra:
                 edge_colors.append('red')
             else:
                 edge_colors.append('black')
+        
+        # Desenhar o grafo
         nx.draw(G, pos, ax=self.ax, 
                 node_color=node_colors,
                 edge_color=edge_colors,
-                with_labels=False,
-                node_size=3,
+                with_labels=self.mostrar_numeracao_var.get(),  # Mostrar numeração se checkbox estiver marcado
+                node_size=self.tamanho_vertices,
                 font_size=8,
                 font_weight='bold',
                 width=2)
+        
+        # Adicionar rótulos das arestas se checkbox estiver marcado
+        if self.mostrar_rotulos_var.get():
+            edge_labels = {}
+            for aresta in self.arestas:
+                edge_labels[(aresta.orig, aresta.dest)] = f"{aresta.dist:.1f}"
+                # Se a aresta não é direcionada, adicionar também no sentido contrário
+                if not hasattr(aresta, 'direcionada') or not aresta.direcionada:
+                    edge_labels[(aresta.dest, aresta.orig)] = f"{aresta.dist:.1f}"
+            
+            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8)
+        
         self.canvas.draw()
         self.canvas.flush_events()
         print("Grafo desenhado com sucesso")
@@ -1101,6 +1346,21 @@ class InterfaceDijkstra:
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao copiar imagem: {str(e)}")
             print(f"Erro ao copiar imagem: {e}")
+
+    def diminuir_tamanho_vertices(self):
+        """Diminui o tamanho dos vértices"""
+        if self.tamanho_vertices > 10:
+            self.tamanho_vertices -= 10
+            self.lbl_tamanho.config(text=f"Tamanho: {self.tamanho_vertices}")
+            self.exibir_grafo()
+        else:
+            messagebox.showwarning("Aviso", "Tamanho mínimo atingido!")
+
+    def aumentar_tamanho_vertices(self):
+        """Aumenta o tamanho dos vértices"""
+        self.tamanho_vertices += 10
+        self.lbl_tamanho.config(text=f"Tamanho: {self.tamanho_vertices}")
+        self.exibir_grafo()
 
 def main():
     root = tk.Tk()
